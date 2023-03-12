@@ -823,7 +823,7 @@ tenacity = ">=6.2.0"
 
 [[package]]
 name = "polars"
-version = "0.16.6"
+version = "0.16.12"
 description = "Blazingly fast DataFrame library"
 category = "main"
 optional = false
@@ -833,16 +833,17 @@ python-versions = ">=3.7"
 typing_extensions = {version = ">=4.0.1", markers = "python_version < \"3.11\""}
 
 [package.extras]
-xlsx2csv = ["xlsx2csv (>=0.8.0)"]
-all = ["polars"]
 pandas = ["pyarrow (>=4.0.0)", "pandas"]
-connectorx = ["connectorx"]
+fsspec = ["fsspec"]
 timezone = ["backports.zoneinfo", "tzdata"]
-pyarrow = ["pyarrow (>=4.0.0)"]
-numpy = ["numpy (>=1.16.0)"]
+sqlalchemy = ["sqlalchemy", "pandas"]
 matplotlib = ["matplotlib"]
 deltalake = ["deltalake (>=0.6.2)"]
-fsspec = ["fsspec"]
+pyarrow = ["pyarrow (>=4.0.0)"]
+connectorx = ["connectorx"]
+numpy = ["numpy (>=1.16.0)"]
+xlsx2csv = ["xlsx2csv (>=0.8.0)"]
+all = ["polars"]
 
 [[package]]
 name = "prompt-toolkit"
