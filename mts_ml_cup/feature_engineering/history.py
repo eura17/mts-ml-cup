@@ -1,6 +1,7 @@
 import polars as pl
 from mts_ml_cup.preprocessing import polars_map
 
+
 def main(sessions: pl.DataFrame, url_cleaner) -> pl.DataFrame:
     sessions = (
         sessions
@@ -24,6 +25,7 @@ def main(sessions: pl.DataFrame, url_cleaner) -> pl.DataFrame:
         url_hosts_stats(sessions)
         .join(total_usage_stats(sessions), how="left", on="user_id")
         .join(usage_stats_per_date(sessions), how="left", on="user_id")
+        .join(usage_stats_per_part_of_day(sessions), how="left", on="user_id")
         .join(usage_stats_per_session(sessions), how="left", on="user_id")
         .join(usage_stats_per_visit(sessions), how="left", on="user_id")
         .join(usage_stats_per_url(sessions), how="left", on="user_id")
