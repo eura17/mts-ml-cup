@@ -3,15 +3,32 @@ from __future__ import annotations
 from typing import Generator
 
 import pandas as pd
+import polars as pl
 from sklearn.metrics import f1_score, roc_auc_score
 from sklearn.model_selection import KFold
 
 
-def split_folds(
-    x: pd.DataFrame, 
-    n_splits: int = 5,
-) -> Generator:
+def kfold_split(x: pl.DataFrame, n_splits: int = 5) -> Generator:
     return KFold(n_splits=n_splits, shuffle=True, random_state=777).split(x)
+
+
+def user_id_split(x: pl.DataFrame, splits: pd.DataFrame) -> Generator:
+    for i in range(5):
+        train_idx = (
+            x[["user_id"]]
+            .with_row_count()
+            .filter(pl.col("user_id").is_in(splits.loc[splits[f"fold_{i}_tr"] == 1, "user_id"].tolist()))
+            ["row_nr"]
+            .to_list()
+        )
+        val_idx = (
+            x[["user_id"]]
+            .with_row_count()
+            .filter(pl.col("user_id").is_in(splits.loc[splits[f"fold_{i}_tr"] == 1, "user_id"].tolist()))
+            ["row_nr"]
+            .to_list()
+        )
+        yield train_idx, val_idx
 
 
 def calc_metrics(
