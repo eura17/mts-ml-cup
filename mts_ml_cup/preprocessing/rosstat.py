@@ -99,7 +99,7 @@ def parse_region_name(first_page_rows: list[str]) -> str:
 
 
 if __name__ == "__main__":
-    from mts_ml_cup.preprocessing import age_to_bucket
+    from mts_ml_cup.utils import age_to_bucket
 
     stats = parse_rosstat("~/mts-ml-cup/data/raw/rosstat.pdf")
     stats.insert(loc=2, column="age_bucket", value=stats["age"].apply(age_to_bucket))

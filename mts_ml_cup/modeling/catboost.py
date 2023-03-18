@@ -8,7 +8,7 @@ import pandas as pd
 import polars as pl
 from catboost.utils import get_gpu_device_count
 
-from mts_ml_cup.validation import kfold_split, calc_metrics
+from mts_ml_cup.modeling.validation import kfold_split, calc_metrics
     
 
 def fit(
@@ -77,7 +77,7 @@ def predict(
     pred = pd.DataFrame()
     pred.loc[:, "user_id"] = test["user_id"].to_pandas()
     pred.loc[:, "is_male"] = is_male
-    pred.loc[:, [f"age_bucket_proba_{i}" for i in range(1, age_probas.shape[1] + 1)]] = age_probas
+    pred.loc[:, [f"age_bucket_{i}_proba" for i in range(1, age_probas.shape[1] + 1)]] = age_probas
     pred.loc[:, "age"] = age_bucket
 
     return pred

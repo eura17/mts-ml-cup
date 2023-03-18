@@ -1,21 +1,59 @@
 from __future__ import annotations
 
-import bisect
+import os
 
-import pandas as pd
 import polars as pl
+from tqdm import tqdm
+
+from mts_ml_cup.utils import age_to_bucket, polars_map
 
 
-def prepare_sessions(
-    part_path: str,
+def find_unique_cat_variables(parts_path: str) -> list[set]:
+    regions = set()
+    cities = set()
+    manufacturers = set()
+    models = set()
+    types = set()
+    oss = set()
+    parts_of_day = set()
+
+    parts_path = "../data/raw/competition_data_final_pqt/"
+    for p in tqdm(os.listdir(parts_path)):
+        if not p.endswith(".parquet"):
+            continue
+        
+        part = (
+            pl.read_parquet(os.path.join(parts_path, p))
+            .with_columns(
+                [
+                    pl.concat_str([pl.col("region_name"), pl.col("city_name")], sep="_+_").alias("city_name"),
+                    pl.concat_str([pl.col("cpe_manufacturer_name"), pl.col("cpe_model_name")], sep="_+_").alias("cpe_model_name"),
+                ]
+            )
+        )
+        regions |= set(part["region_name"].unique())
+        cities |= set(part["city_name"].unique())
+        manufacturers |= set(part["cpe_manufacturer_name"].unique())
+        models |= set(part["cpe_model_name"].unique())
+        types |= set(part["cpe_type_cd"].unique())
+        oss |= set(part["cpe_model_os_type"].unique())
+        parts_of_day |= set(part["part_of_day"].unique())
+
+    return regions, cities, manufacturers, models, types, oss, parts_of_day
+
+
+def convert_sessions(
+    sessions: pl.DataFrame,
     regions_mapping: dict[str, int],
     cities_mapping: dict[str, int],
     manufacturers_mapping: dict[str, int],
     models_mapping: dict[str, int],
+    types_mapping: dict[str, int],
+    os_mapping: dict[str, int],
     parts_of_day_mapping: dict[str, int],
 ) -> pl.DataFrame:
     return (
-        pl.read_parquet(part_path)
+        sessions
         .with_columns(
             [
                 pl.concat_str([pl.col("region_name"), pl.col("city_name")], sep="_+_").alias("city_name"),
@@ -46,6 +84,16 @@ def prepare_sessions(
             on="cpe_model_name",
         )
         .join(
+            other=polars_map(types_mapping, "cpe_type_cd", "type_id", pl.UInt8),
+            how="left",
+            on="cpe_type_cd",
+        )
+        .join(
+            other=polars_map(os_mapping, "cpe_model_os_type", "os_id", pl.UInt8),
+            how="left",
+            on="cpe_model_os_type",
+        )
+        .join(
             other=polars_map(parts_of_day_mapping, "part_of_day", "part_of_day_id", pl.UInt8),
             how="left",
             on="part_of_day",
@@ -56,6 +104,8 @@ def prepare_sessions(
                 "city_id",
                 "manufacturer_id",
                 "model_id",
+                "type_id",
+                "os_id",
                 "url_host",
                 "price",
                 "date",
@@ -67,13 +117,13 @@ def prepare_sessions(
     )
 
 
-def prepare_train(path: str) -> pl.DataFrame:
+def convert_train(train: pl.DataFrame) -> pl.DataFrame:
     return (
-        pl.read_parquet(path)
+        train
         .with_columns(
             pl.col("user_id").cast(pl.UInt32),
             pl.col("is_male").apply(lambda s: s if s != "NA" else pl.Null).cast(pl.UInt8),
-            pl.col("age").cast(pl.UInt16),
+            pl.col("age").cast(pl.UInt8),
             pl.col("age").apply(age_to_bucket).cast(pl.UInt8).alias("age_bucket"),
         )
         .select(
@@ -87,25 +137,5 @@ def prepare_train(path: str) -> pl.DataFrame:
     )
 
 
-def prepare_test(path: str) -> pl.DataFrame:
-    return pl.read_parquet(path).with_columns(pl.col("user_id").cast(pl.UInt32)).select(["user_id"])
-
-
-def age_to_bucket(age: int) -> int:
-    return bisect.bisect_left([18, 25, 35, 45, 55, 65], age)
-
-
-def polars_map(
-    mapping: dict[str, int], 
-    key_name: str, 
-    id_name: str,
-    id_dtype: pl.DataType,
-) -> pl.DataFrame:
-    return (
-        pl.from_pandas(
-            pd.Series(mapping)
-            .reset_index(drop=False)
-            .rename(columns={"index": key_name, 0: id_name})
-        )
-        .with_columns(pl.col(id_name).cast(id_dtype))
-    )
+def convert_test(test: pl.DataFrame) -> pl.DataFrame:
+    return test.with_columns(pl.col("user_id").cast(pl.UInt32)).select(["user_id"])

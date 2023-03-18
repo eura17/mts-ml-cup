@@ -12,19 +12,19 @@ def kfold_split(x: pl.DataFrame, n_splits: int = 5) -> Generator:
     return KFold(n_splits=n_splits, shuffle=True, random_state=777).split(x)
 
 
-def user_id_split(x: pl.DataFrame, splits: pd.DataFrame) -> Generator:
+def manual_split(x: pl.DataFrame, folds: pd.DataFrame) -> Generator:
     for i in range(5):
         train_idx = (
             x[["user_id"]]
             .with_row_count()
-            .filter(pl.col("user_id").is_in(splits.loc[splits[f"fold_{i}_tr"] == 1, "user_id"].tolist()))
+            .filter(pl.col("user_id").is_in(folds.loc[folds[f"fold_{i}_tr"] == 1, "user_id"].tolist()))
             ["row_nr"]
             .to_list()
         )
         val_idx = (
             x[["user_id"]]
             .with_row_count()
-            .filter(pl.col("user_id").is_in(splits.loc[splits[f"fold_{i}_tr"] == 1, "user_id"].tolist()))
+            .filter(pl.col("user_id").is_in(folds.loc[folds[f"fold_{i}_va"] == 1, "user_id"].tolist()))
             ["row_nr"]
             .to_list()
         )

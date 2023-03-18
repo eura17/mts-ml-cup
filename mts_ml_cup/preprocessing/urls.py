@@ -28,7 +28,7 @@ def lower(url: str) -> str:
     return url.lower()
 
 
-def replace_hyphens_with_points(url: str) -> str:
+def replace_hyphens_with_dots(url: str) -> str:
     return ".".join(filter(lambda p: p != "", url.split("-")))
 
 
