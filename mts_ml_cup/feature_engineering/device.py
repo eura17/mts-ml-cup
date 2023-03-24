@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import polars as pl
-from mts_ml_cup.preprocessing import polars_map
+from mts_ml_cup.utils import polars_map
 
 PRICES = {
     55: 2899.0,  # Atlas LLC_+_G450
@@ -35,38 +35,29 @@ PRICES = {
 }
 
 
-def main(sessions: pl.DataFrame, prices: dict[int, float] = PRICES) -> pl.DataFrame:
-    return (
-        manufacturer_by_user(sessions)
-        .with_columns(
-            pl.when(pl.col("manufacturer_id") == 2)  # apple
-            .then(1)
-            .otherwise(2)
-            .cast(pl.UInt8)
-            .alias("os_id")
-        )
-        .join(model_by_user(sessions), how="outer", on="user_id")
-        .join(price_by_model(sessions, prices), how="outer", on="model_id")
-    )
-
-
 def manufacturer_by_user(sessions: pl.DataFrame) -> pl.DataFrame:
     return (
         sessions
-        .select(["user_id", "manufacturer_id"])
-        .unique()
+        .groupby(["user_id", "manufacturer_id"])
+        .agg(pl.col("request_cnt").sum())
+        .sort(["user_id", "request_cnt", "manufacturer_id"])
+        .groupby("user_id")
+        .agg(pl.col("manufacturer_id").last().alias("device_manufacturer_id"))
     )
 
 
 def model_by_user(sessions: pl.DataFrame) -> pl.DataFrame:
     return (
         sessions
-        .select(["user_id", "model_id"])
-        .unique()
+        .groupby(["user_id", "model_id"])
+        .agg(pl.col("request_cnt").sum())
+        .sort(["user_id", "request_cnt", "model_id"])
+        .groupby("user_id")
+        .agg(pl.col("model_id").last().alias("device_model_id"))
     )
 
 
-def price_by_model(sessions: pl.DataFrame, prices: dict[int, float]) -> pl.DataFrame:
+def price_by_model(sessions: pl.DataFrame, prices: dict[int, float] = PRICES) -> pl.DataFrame:
     model_prices = (
         sessions
         .select(["model_id", "manufacturer_id", "price"])
@@ -92,5 +83,32 @@ def price_by_model(sessions: pl.DataFrame, prices: dict[int, float]) -> pl.DataF
             how="left",
             on="model_id",
         )
-        .select(["model_id", pl.coalesce(["avg_price", "price"]).alias("avg_price")])
+        .select(
+            [
+                pl.col("model_id").alias("device_model_id"), 
+                pl.coalesce(["avg_price", "price"]).alias("device_avg_price"),
+            ]
+        )
+    )
+
+
+def os_by_user(sessions: pl.DataFrame) -> pl.DataFrame:
+    return (
+        sessions
+        .groupby(["user_id", "os_id"])
+        .agg(pl.col("request_cnt").sum())
+        .sort(["user_id", "request_cnt", "os_id"])
+        .groupby("user_id")
+        .agg(pl.col("os_id").last().alias("device_os_id"))
+    )
+
+
+def type_by_user(sessions: pl.DataFrame) -> pl.DataFrame:
+    return (
+        sessions
+        .groupby(["user_id", "type_id"])
+        .agg(pl.col("request_cnt").sum())
+        .sort(["user_id", "request_cnt", "type_id"])
+        .groupby("user_id")
+        .agg(pl.col("type_id").last().alias("device_type_id"))
     )

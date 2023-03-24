@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from typing import Any, Optional, Callable
+import json
+from typing import Any, Callable
+from pathlib import Path
 
 import catboost as cb
 import numpy as np
@@ -9,100 +11,124 @@ import polars as pl
 from catboost.utils import get_gpu_device_count
 
 from mts_ml_cup.modeling.validation import kfold_split, calc_metrics
-    
 
-def fit(
-    train: pl.DataFrame,
-    pool_params: dict[str, Any],
-    model_params: dict[str, Any],
-    splitter: Callable[[pl.DataFrame], tuple[np.ndarray, np.ndarray]] = kfold_split,
-    verbose: int = 1_000,
-) -> tuple[list[cb.CatBoostClassifier], list[cb.CatBoostClassifier], list[dict[float]]]:
-    model_params.setdefault("task_type", "GPU" if get_gpu_device_count() > 0 else "CPU")
-    model_params["allow_writing_files"] = False
 
-    models_sex = []
-    models_age = []
-    metrics = []
+class CatBoostCV:
+    def __init__(
+        self,
+        model_params: dict[str, Any],
+        pool_params: dict[str, Any],
+        splitter: Callable[[pl.DataFrame], tuple[np.ndarray, np.ndarray]] = kfold_split,
+    ) -> None:
+        model_params.setdefault("task_type", "GPU" if get_gpu_device_count() > 0 else "CPU")
+        model_params["allow_writing_files"] = False
 
-    for i, (train_idx, val_idx) in enumerate(splitter(train)):
-        train_fold, val_fold = train[train_idx], train[val_idx]
+        self.model_params = model_params
+        self.pool_params = pool_params
+        self.splitter = splitter
 
-        train_fold_sex_pool = pool_from_polars(prepare_sex(train_fold), "is_male", **pool_params)
-        val_fold_sex_pool = pool_from_polars(prepare_sex(val_fold), "is_male", **pool_params)
-        fold_model_sex = cb.CatBoostClassifier(eval_metric="Logloss", loss_function="Logloss", **model_params)
-        fold_model_sex.fit(train_fold_sex_pool, eval_set=val_fold_sex_pool, verbose=verbose)
-        models_sex.append(fold_model_sex)
+    def fit(self, train: pl.DataFrame, verbose: int = 1_000) -> list[dict[str, float]]:
+        self.models_sex_ = []
+        self.models_age_ = []
+        self.metrics_ = []
+
+        for fold, (train_idx, val_idx) in enumerate(self.splitter(train)):
+            train_fold, val_fold = train[train_idx], train[val_idx]
+
+            train_fold_sex_pool = self.to_pool_sex(train_fold)
+            val_fold_sex_pool = self.to_pool_sex(val_fold)
+            fold_model_sex = cb.CatBoostClassifier(eval_metric="Logloss", loss_function="Logloss", **self.model_params)
+            fold_model_sex.fit(train_fold_sex_pool, eval_set=val_fold_sex_pool, verbose=verbose)
+            self.models_sex_.append(fold_model_sex)
+            
+            fold_train_age = self.to_pool_age(train_fold)
+            fold_val_age = self.to_pool_age(val_fold)
+            fold_model_age = cb.CatBoostClassifier(eval_metric="MultiClass", loss_function="MultiClass", **self.model_params)
+            fold_model_age.fit(fold_train_age, eval_set=fold_val_age, verbose=verbose)
+            self.models_age_.append(fold_model_age)
+
+            fold_metrics = calc_metrics(
+                is_male=val_fold_sex_pool.get_label(),
+                is_male_preds=fold_model_sex.predict_proba(val_fold_sex_pool)[:, 1],
+                age_bucket=fold_val_age.get_label(),
+                age_bucket_preds=fold_model_age.predict(fold_val_age),
+            )
+            print()
+            print(f"{'-' * 20} {fold = } {'-' * 20}")
+            for name, value in fold_metrics.items():
+                print(f"{name} = {value:.4f}")
+            print(f"{'-' * 20} {fold = } {'-' * 20}")
+            print()
+            self.metrics_.append(fold_metrics)
         
-        fold_train_age = pool_from_polars(prepare_age(train_fold), "age_bucket", **pool_params)
-        fold_val_age = pool_from_polars(prepare_age(val_fold), "age_bucket", **pool_params)
-        fold_model_age = cb.CatBoostClassifier(eval_metric="MultiClass", loss_function="MultiClass", **model_params)
-        fold_model_age.fit(fold_train_age, eval_set=fold_val_age, verbose=verbose)
-        models_age.append(fold_model_age)
+        return self.metrics_
 
-        fold_metrics = calc_metrics(
-            is_male=val_fold_sex_pool.get_label(),
-            is_male_preds=fold_model_sex.predict_proba(val_fold_sex_pool)[:, 1],
-            age_bucket=fold_val_age.get_label(),
-            age_bucket_preds=fold_model_age.predict(fold_val_age),
-        )
-        print()
-        print(f"{'-' * 20} fold = {i} {'-' * 20}")
-        for name, value in fold_metrics.items():
-            print(f"{name} = {value:.4f}")
-        print(f"{'-' * 20} fold = {i} {'-' * 20}")
-        print()
-        metrics.append(fold_metrics)
+    def predict(self, test: pl.DataFrame) -> pd.DataFrame:
+        test_pool = self.to_pool(test)
+        is_male = np.mean([model.predict_proba(test_pool)[:, 1] for model in self.models_sex_], axis=0)
+        age_probas = np.mean([model.predict_proba(test_pool) for model in self.models_age_], axis=0)
     
-    return models_sex, models_age, metrics
+        pred = pd.DataFrame()
+        pred.loc[:, "user_id"] = test["user_id"].to_pandas()
+        pred.loc[:, "is_male"] = is_male
+        pred.loc[:, [f"age_bucket_{i}_proba" for i in range(1, age_probas.shape[1] + 1)]] = age_probas
+        pred.loc[:, "age"] = np.argmax(age_probas, axis=1) + 1
 
+        return pred
 
-def predict(
-    test: pl.DataFrame,
-    pool_params: dict[str, Any],
-    models_sex: list[cb.CatBoostClassifier],
-    models_age: list[cb.CatBoostClassifier],
-) -> pd.DataFrame:
-    test_pool = pool_from_polars(test.select(pl.exclude("user_id")), **pool_params)
+    def predict_oof(self, train: pl.DataFrame) -> pd.DataFrame:
+        return pd.concat(
+            [
+                self.predict(train[val_idx]).assign(fold=fold)
+                for fold, (_, val_idx) in enumerate(self.splitter(train))
+            ]
+        ).reset_index(drop=True)
 
-    is_male = 0
-    for model_sex in models_sex:
-        is_male += model_sex.predict_proba(test_pool)[:, 1] / len(models_sex)
+    def feature_importances(self, task: str) -> pd.Series:
+        models = getattr(self, f"models_{task}_")
+        fi = 0
+        for model in models:
+            fi += pd.Series(model.feature_importances_, index=model.feature_names_) / len(models)
+        return fi.sort_values(ascending=False)
 
-    age_probas = 0
-    for model_age in models_age:
-        age_probas += model_age.predict_proba(test_pool) / len(models_age)
-    age_bucket = np.argmax(age_probas, axis=1) + 1
+    def to_pool(self, dataset: pl.DataFrame) -> cb.Pool:
+        return cb.Pool(
+            data=dataset.select(pl.exclude(["user_id", "age", "age_bucket", "is_male"])).to_pandas(),
+            **self.pool_params,
+        )
 
-    pred = pd.DataFrame()
-    pred.loc[:, "user_id"] = test["user_id"].to_pandas()
-    pred.loc[:, "is_male"] = is_male
-    pred.loc[:, [f"age_bucket_{i}_proba" for i in range(1, age_probas.shape[1] + 1)]] = age_probas
-    pred.loc[:, "age"] = age_bucket
+    def to_pool_sex(self, dataset: pl.DataFrame) -> cb.Pool:
+        dataset = (
+            dataset
+            .filter(pl.col("is_male").is_not_null())
+            .select(pl.exclude(["user_id", "age", "age_bucket"]))
+        )
+        return cb.Pool(
+            data=dataset.select(pl.exclude("is_male")).to_pandas(),
+            label=dataset["is_male"].to_pandas(),
+            **self.pool_params,
+        )
 
-    return pred
+    def to_pool_age(self, dataset: pl.DataFrame) -> cb.Pool:
+        dataset = (
+            dataset
+            .filter(pl.col("age_bucket").is_not_null())
+            .with_columns(pl.col("age_bucket").clip_min(1))
+            .select(pl.exclude(["user_id", "is_male", "age"]))
+        )
+        return cb.Pool(
+            data=dataset.select(pl.exclude("age_bucket")).to_pandas(),
+            label=dataset["age_bucket"].to_pandas(),
+            **self.pool_params,
+        )
 
-
-def pool_from_polars(dataset: pl.DataFrame, target_col: Optional[str] = None, **kwargs) -> cb.Pool:
-    return cb.Pool(
-        data=(dataset.select(pl.exclude(target_col)) if target_col is not None else dataset).to_pandas(),
-        label=dataset[target_col].to_pandas() if target_col is not None else None,
-        **kwargs,
-    )
-
-
-def prepare_sex(dataset: pl.DataFrame) -> pl.DataFrame:
-    return (
-        dataset
-        .filter(pl.col("is_male").is_not_null())
-        .select(pl.exclude(["user_id", "age", "age_bucket"]))
-    )
-
-
-def prepare_age(dataset: pl.DataFrame) -> pl.DataFrame:
-    return (
-        dataset
-        .filter(pl.col("age_bucket").is_not_null())
-        .with_columns(pl.col("age_bucket").clip_min(1))
-        .select(pl.exclude(["user_id", "is_male", "age"]))
-    )
+    def save_models(self, path: str | Path) -> None:
+        path = Path(path)
+        path.mkdir(parents=True, exist_ok=True)
+        for fold, (model_sex, model_age) in enumerate(zip(self.models_sex_, self.models_age_)):
+            fold_path = path / f"fold-{fold}"
+            fold_path.mkdir(parents=True, exist_ok=True)
+            model_sex.save_model(str(fold_path / "sex.cbm"))
+            model_age.save_model(str(fold_path / "age.cbm"))
+        with open(path / "metrics.json", "w") as f:
+            json.dump(self.metrics_, f)
