@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 from pathlib import Path
 
 import catboost as cb
@@ -63,10 +63,17 @@ class CatBoostCV:
         
         return self.metrics_
 
-    def predict(self, test: pl.DataFrame) -> pd.DataFrame:
+    def predict(self, test: pl.DataFrame, fold: Optional[int] = None) -> pd.DataFrame:
+        if fold is not None:
+            models_sex = [self.models_sex_[fold]]
+            models_age = [self.models_age_[fold]]
+        else:
+            models_sex = self.models_sex_
+            models_age = self.models_age_
+
         test_pool = self.to_pool(test)
-        is_male = np.mean([model.predict_proba(test_pool)[:, 1] for model in self.models_sex_], axis=0)
-        age_probas = np.mean([model.predict_proba(test_pool) for model in self.models_age_], axis=0)
+        is_male = np.mean([model.predict_proba(test_pool)[:, 1] for model in models_sex], axis=0)
+        age_probas = np.mean([model.predict_proba(test_pool) for model in models_age], axis=0)
     
         pred = pd.DataFrame()
         pred.loc[:, "user_id"] = test["user_id"].to_pandas()
@@ -79,7 +86,7 @@ class CatBoostCV:
     def predict_oof(self, train: pl.DataFrame) -> pd.DataFrame:
         return pd.concat(
             [
-                self.predict(train[val_idx]).assign(fold=fold)
+                self.predict(train[val_idx], fold=fold).assign(fold=fold)
                 for fold, (_, val_idx) in enumerate(self.splitter(train))
             ]
         ).reset_index(drop=True)
@@ -132,3 +139,29 @@ class CatBoostCV:
             model_age.save_model(str(fold_path / "age.cbm"))
         with open(path / "metrics.json", "w") as f:
             json.dump(self.metrics_, f)
+
+    @classmethod
+    def from_snapshot(cls, path: str | Path, **kwargs) -> CatBoostCV:
+        model = cls(**kwargs)
+
+        path = Path(path)
+        folds = [p for p in path.iterdir() if p.name.startswith("fold")]
+
+        models_sex = []
+        models_age = []
+        for fold in sorted(folds):
+            fold_model_sex = cb.CatBoostClassifier()
+            fold_model_sex.load_model(str(fold / "sex.cbm"))
+            models_sex.append(fold_model_sex)
+
+            fold_model_age = cb.CatBoostClassifier()
+            fold_model_age.load_model(str(fold / "age.cbm"))
+            models_age.append(fold_model_age)
+        
+        with open(path / "metrics.json", "r") as f:
+            metrics = json.load(f)
+
+        model.models_sex_ = models_sex
+        model.models_age_ = models_age
+        model.metrics_ = metrics
+        return model

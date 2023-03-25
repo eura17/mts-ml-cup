@@ -1,6 +1,7 @@
 import itertools as it
 
 import polars as pl
+import nltk
 
 
 def urls_stats_by_user(sessions: pl.DataFrame) -> pl.DataFrame:
@@ -69,15 +70,16 @@ def all_urls_by_user_as_text(sessions: pl.DataFrame) -> pl.DataFrame:
     )
 
 
-def all_urls_combinations_as_text(sessions: pl.DataFrame, k: int = 2) -> pl.DataFrame:
+def all_urls_ngrams_as_text(sessions: pl.DataFrame, k: int = 2) -> pl.DataFrame:
     return (
         sessions
-        .select(["user_id", "url_host"])
-        .unique()
+        .groupby(["user_id", "url_host"])
+        .agg(pl.col("request_cnt").sum())
+        .sort(["user_id", "request_cnt", "url_host"], descending=[False, True, False])
         .groupby("user_id")
         .agg(
             pl.col("url_host")
-            .apply(lambda urls: " ".join(map("_+_".join, it.combinations(sorted(urls), k))))
-            .alias(f"url_all_visited_urls_k_{k}")
+            .apply(lambda urls: " ".join(map(lambda url_pair: "_+_".join(url_pair), nltk.bigrams(urls))))
+            .alias(f"url_all_visited_urls_{k}grams")
         )
     )
